@@ -43,32 +43,56 @@ static uint64_t parse_hex_or_dec(const char* str) {
 static XmlFileConfig parse_file_node(const pugi::xml_node& file_node) {
     XmlFileConfig fc;
 
-    // Attributes vary: "id", "ID", "name", "Name", etc.
-    // Try common patterns
-    fc.id   = file_node.attribute("id").as_string(
-              file_node.attribute("ID").as_string(""));
-    fc.type = file_node.attribute("type").as_string(
-              file_node.attribute("Type").as_string(""));
+    // Attributes vs Child Nodes: Try both
+    fc.id = file_node.attribute("id").as_string(
+            file_node.attribute("ID").as_string(
+            file_node.child_value("id")));
+    if (fc.id.empty()) fc.id = file_node.child_value("ID");
 
-    // Parse Block children (base address, size)
-    for (auto block : file_node.children("Block")) {
-        fc.id_name = block.attribute("id").as_string("");
+    fc.type = file_node.attribute("type").as_string(
+              file_node.attribute("Type").as_string(
+              file_node.child_value("type")));
+    if (fc.type.empty()) fc.type = file_node.child_value("Type");
+
+    // Parse Block — handles both <Block base="0x..." /> and <Block><Base>0x...</Base></Block>
+    auto block = file_node.child("Block");
+    if (block) {
+        fc.id_name = block.attribute("id").as_string(
+                     block.attribute("ID").as_string(
+                     block.child_value("id")));
+        if (fc.id_name.empty()) fc.id_name = block.child_value("ID");
+
         fc.base_address = parse_hex_or_dec(
             block.attribute("base").as_string(
-            block.attribute("Base").as_string("")));
+            block.attribute("Base").as_string(
+            block.child_value("base"))));
+        if (fc.base_address == 0) {
+            fc.base_address = parse_hex_or_dec(block.child_value("Base"));
+        }
+
         fc.size = parse_hex_or_dec(
             block.attribute("size").as_string(
-            block.attribute("Size").as_string("")));
+            block.attribute("Size").as_string(
+            block.child_value("size"))));
+        if (fc.size == 0) {
+            fc.size = parse_hex_or_dec(block.child_value("Size"));
+        }
     }
 
     fc.flag       = file_node.attribute("flag").as_uint(
-                    file_node.attribute("Flag").as_uint(0));
+                    file_node.attribute("Flag").as_uint(
+                    file_node.child("flag").text().as_uint(
+                    file_node.child("Flag").text().as_uint(0))));
+    
     fc.check_flag = file_node.attribute("check_flag").as_uint(
-                    file_node.attribute("CheckFlag").as_uint(0));
+                    file_node.attribute("CheckFlag").as_uint(
+                    file_node.child("check_flag").text().as_uint(
+                    file_node.child("CheckFlag").text().as_uint(0))));
 
     // Parse Operation children
     for (auto op : file_node.children()) {
         std::string node_name = op.name();
+        // std::cerr << "  debug: found node " << node_name << " under " << fc.id << "\n";
         // Accept <Operation type="..."> or <Scheme name="...">
         if (node_name == "Operation" || node_name == "Scheme") {
             FileOperation fop;
@@ -124,17 +148,50 @@ bool parse_xml_config(const std::string& xml_utf8,
     out_config.name = product_node.attribute("name").as_string(
                       product_node.attribute("Name").as_string("Unknown"));
 
-    // Parse each file node
-    for (auto file_node : product_node.children("File")) {
-        out_config.files.push_back(parse_file_node(file_node));
+    // Parse file/packet entries — handle both <File> and <Packet> tags,
+    // potentially wrapped in a <PacketList> or directly under <Product>.
+    
+    auto parse_children = [&](const pugi::xml_node& parent) {
+        for (auto node : parent.children()) {
+            std::string name = node.name();
+            if (name == "File" || name == "Packet") {
+                out_config.files.push_back(parse_file_node(node));
+            }
+        }
+    };
+
+    // Try directly under product node
+    parse_children(product_node);
+
+    // Try under <PacketList>
+    if (auto packet_list = product_node.child("PacketList")) {
+        parse_children(packet_list);
     }
 
-    // Also try <NVBackup>, <Scheme>, and other patterns
-    // Some PAC XMLs put file entries under different tags
+    // NEW: Try under <SchemeList><Scheme>
     if (out_config.files.empty()) {
-        // Try all children that have an "id" or "ID" attribute
+        std::string scheme_name = product_node.child_value("SchemeName");
+        if (scheme_name.empty()) scheme_name = out_config.name;
+
+        auto scheme_list = doc.child("BMAConfig").child("SchemeList");
+        if (!scheme_list) scheme_list = doc.child("SchemeList");
+
+        if (scheme_list) {
+            for (auto scheme : scheme_list.children("Scheme")) {
+                std::string sname = scheme.attribute("name").as_string(
+                                    scheme.attribute("Name").as_string(""));
+                if (sname == scheme_name) {
+                    parse_children(scheme);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Fallback: if still empty, try all children that look like entries
+    if (out_config.files.empty()) {
         for (auto child : product_node.children()) {
-            if (child.attribute("id") || child.attribute("ID")) {
+            if (child.attribute("id") || child.attribute("ID") || child.child("ID") || child.child("id")) {
                 out_config.files.push_back(parse_file_node(child));
             }
         }

@@ -138,12 +138,34 @@ std::vector<FileInfo> PacReader::file_infos() const {
 }
 
 std::string PacReader::xml_config() const {
-    if (xml_data_.empty()) return {};
+    std::vector<uint8_t> data_to_parse = xml_data_;
+
+    // If no XML data was found in the "gap", check the file entries for an XML file.
+    if (data_to_parse.empty()) {
+        for (const auto& fe : raw_files_) {
+            std::string name = from_utf16(fe.file_name, 256);
+            std::string id = from_utf16(fe.file_id, 256);
+            
+            // Check if it's an XML file (usually has .xml in name or id)
+            if (name.find(".xml") != std::string::npos || id.find(".xml") != std::string::npos) {
+                // Read this file's data
+                std::ifstream pac(path_, std::ios::binary);
+                if (pac) {
+                    pac.seekg(fe.data_offset);
+                    data_to_parse.resize(fe.file_size);
+                    pac.read(reinterpret_cast<char*>(data_to_parse.data()), fe.file_size);
+                }
+                break;
+            }
+        }
+    }
+
+    if (data_to_parse.empty()) return {};
 
     // The XML data in PAC is UTF-16LE encoded. Convert to UTF-8.
     // Check for BOM (0xFFFE or 0xFEFF) to detect encoding.
-    const uint8_t* data = xml_data_.data();
-    size_t len = xml_data_.size();
+    const uint8_t* data = data_to_parse.data();
+    size_t len = data_to_parse.size();
 
     // Check for UTF-16LE BOM
     if (len >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
