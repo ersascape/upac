@@ -1,0 +1,29 @@
+# Build artifacts
+upac_bin
+build/
+bin/
+obj/
+*.o
+*.a
+*.so
+*.dylib
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_CPack_Packages/
+CPackConfig.cmake
+CPackSourceConfig.cmake
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
