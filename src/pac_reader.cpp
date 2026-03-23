@@ -6,6 +6,30 @@
 
 namespace upac {
 
+namespace {
+
+std::string decode_xml_payload(const std::vector<uint8_t>& data_to_parse) {
+    if (data_to_parse.empty()) return {};
+
+    const uint8_t* data = data_to_parse.data();
+    size_t len = data_to_parse.size();
+
+    if (len >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
+        const char16_t* u16 = reinterpret_cast<const char16_t*>(data + 2);
+        return from_utf16(u16, (len - 2) / 2);
+    }
+
+    if (len >= 2 && data[0] == '<' && data[1] == 0x00) {
+        const char16_t* u16 = reinterpret_cast<const char16_t*>(data);
+        return from_utf16(u16, len / 2);
+    }
+
+    while (len > 0 && data[len - 1] == 0) --len;
+    return std::string(reinterpret_cast<const char*>(data), len);
+}
+
+} // namespace
+
 // ============================================================================
 // Open + Parse
 // ============================================================================
@@ -75,10 +99,19 @@ std::optional<PacReader> PacReader::open(const std::filesystem::path& path) {
 
     // Find the earliest data offset among all files
     uint64_t earliest_data = reader.actual_file_size_;
-    for (const auto& fe : reader.raw_files_) {
+    for (size_t i = 0; i < reader.raw_files_.size(); ++i) {
+        const auto& fe = reader.raw_files_[i];
         if (fe.file_flag != 0 && fe.data_offset != 0 && fe.file_size > 0) {
             earliest_data = std::min(earliest_data,
                                      static_cast<uint64_t>(fe.data_offset));
+        }
+
+        if (reader.xml_file_index_ == static_cast<size_t>(-1)) {
+            std::string name = from_utf16(fe.file_name, 256);
+            std::string id = from_utf16(fe.file_id, 256);
+            if (name.find(".xml") != std::string::npos || id.find(".xml") != std::string::npos) {
+                reader.xml_file_index_ = i;
+            }
         }
     }
 
@@ -116,77 +149,68 @@ ProductInfo PacReader::product_info() const {
 }
 
 std::vector<FileInfo> PacReader::file_infos() const {
-    std::vector<FileInfo> infos;
-    infos.reserve(raw_files_.size());
-    for (size_t i = 0; i < raw_files_.size(); ++i) {
-        const auto& fe = raw_files_[i];
-        FileInfo fi;
-        fi.index       = i;
-        fi.id          = from_utf16(fe.file_id, 256);
-        fi.name        = from_utf16(fe.file_name, 256);
-        fi.version     = from_utf16(fe.file_version, 256);
-        fi.size        = fe.file_size;
-        fi.data_offset = fe.data_offset;
-        fi.file_flag   = fe.file_flag;
-        fi.check_flag  = fe.check_flag;
-        fi.omit_flag   = fe.omit_flag;
-        fi.addr_count  = fe.addr_count;
-        std::memcpy(fi.addr, fe.addr, sizeof(fi.addr));
-        infos.push_back(std::move(fi));
+    if (!file_infos_cache_) {
+        std::vector<FileInfo> infos;
+        infos.reserve(raw_files_.size());
+        for (size_t i = 0; i < raw_files_.size(); ++i) {
+            const auto& fe = raw_files_[i];
+            FileInfo fi;
+            fi.index       = i;
+            fi.id          = from_utf16(fe.file_id, 256);
+            fi.name        = from_utf16(fe.file_name, 256);
+            fi.version     = from_utf16(fe.file_version, 256);
+            fi.size        = fe.file_size;
+            fi.data_offset = fe.data_offset;
+            fi.file_flag   = fe.file_flag;
+            fi.check_flag  = fe.check_flag;
+            fi.omit_flag   = fe.omit_flag;
+            fi.addr_count  = fe.addr_count;
+            std::memcpy(fi.addr, fe.addr, sizeof(fi.addr));
+            infos.push_back(std::move(fi));
+        }
+        file_infos_cache_ = std::move(infos);
     }
-    return infos;
+    return *file_infos_cache_;
 }
 
 std::string PacReader::xml_config() const {
+    if (xml_config_cache_) {
+        return *xml_config_cache_;
+    }
+
     std::vector<uint8_t> data_to_parse = xml_data_;
-
-    // If no XML data was found in the "gap", check the file entries for an XML file.
-    if (data_to_parse.empty()) {
-        for (const auto& fe : raw_files_) {
-            std::string name = from_utf16(fe.file_name, 256);
-            std::string id = from_utf16(fe.file_id, 256);
-            
-            // Check if it's an XML file (usually has .xml in name or id)
-            if (name.find(".xml") != std::string::npos || id.find(".xml") != std::string::npos) {
-                // Read this file's data
-                std::ifstream pac(path_, std::ios::binary);
-                if (pac) {
-                    pac.seekg(fe.data_offset);
-                    data_to_parse.resize(fe.file_size);
-                    pac.read(reinterpret_cast<char*>(data_to_parse.data()), fe.file_size);
-                }
-                break;
-            }
-        }
+    if (data_to_parse.empty() && xml_file_index_ != static_cast<size_t>(-1) && xml_file_index_ < raw_files_.size()) {
+        read_file_data(raw_files_[xml_file_index_], data_to_parse);
     }
 
-    if (data_to_parse.empty()) return {};
+    xml_config_cache_ = decode_xml_payload(data_to_parse);
+    return *xml_config_cache_;
+}
 
-    // The XML data in PAC is UTF-16LE encoded. Convert to UTF-8.
-    // Check for BOM (0xFFFE or 0xFEFF) to detect encoding.
-    const uint8_t* data = data_to_parse.data();
-    size_t len = data_to_parse.size();
-
-    // Check for UTF-16LE BOM
-    if (len >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
-        // UTF-16LE with BOM — convert
-        const char16_t* u16 = reinterpret_cast<const char16_t*>(data + 2);
-        size_t u16_len = (len - 2) / 2;
-        return from_utf16(u16, u16_len);
+bool PacReader::read_file_data(const PacFileEntry& fe, std::vector<uint8_t>& out) const {
+    if (fe.file_size == 0 || fe.data_offset == 0) {
+        out.clear();
+        return true;
     }
 
-    // Check for UTF-16LE without BOM (common in PAC files):
-    // If second byte is 0x00 and first byte is '<', likely UTF-16LE
-    if (len >= 2 && data[0] == '<' && data[1] == 0x00) {
-        const char16_t* u16 = reinterpret_cast<const char16_t*>(data);
-        size_t u16_len = len / 2;
-        return from_utf16(u16, u16_len);
+    std::ifstream pac(path_, std::ios::binary);
+    if (!pac) {
+        std::cerr << "error: cannot reopen PAC file\n";
+        return false;
     }
 
-    // Otherwise assume UTF-8 / ASCII
-    // Strip any trailing nulls
-    while (len > 0 && data[len - 1] == 0) --len;
-    return std::string(reinterpret_cast<const char*>(data), len);
+    pac.seekg(fe.data_offset);
+    if (!pac) {
+        return false;
+    }
+
+    out.resize(fe.file_size);
+    pac.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(fe.file_size));
+    if (!pac) {
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 // ============================================================================
@@ -205,14 +229,11 @@ bool PacReader::extract(size_t index,
     std::string id   = from_utf16(fe.file_id, 256);
 
     if (fe.file_flag == 0 || fe.file_size == 0) {
-        // Operation-only entry (no file data)
         std::cout << "  [skip] " << id << " — operation only, no file data\n";
         return true;
     }
 
-    // Use file_name if available, fallback to file_id
     std::string out_name = name.empty() ? id : name;
-    // Strip any directory components from the stored filename
     auto slash_pos = out_name.find_last_of("/\\");
     if (slash_pos != std::string::npos) {
         out_name = out_name.substr(slash_pos + 1);
@@ -221,7 +242,6 @@ bool PacReader::extract(size_t index,
     std::filesystem::create_directories(out_dir);
     auto out_path = out_dir / out_name;
 
-    // Read from PAC and write to output
     std::ifstream pac(path_, std::ios::binary);
     if (!pac) {
         std::cerr << "error: cannot reopen PAC file\n";
@@ -235,8 +255,7 @@ bool PacReader::extract(size_t index,
         return false;
     }
 
-    // Stream in chunks (handle large files)
-    constexpr size_t CHUNK = 1024 * 1024; // 1MB
+    constexpr size_t CHUNK = 4 * 1024 * 1024;
     uint32_t remaining = fe.file_size;
     std::vector<char> buf(CHUNK);
 

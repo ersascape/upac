@@ -56,11 +56,16 @@ public:
 private:
     PacReader() = default;
 
+    bool read_file_data(const PacFileEntry& entry, std::vector<uint8_t>& out) const;
+
     std::filesystem::path path_;
     PacHeader header_{};
     std::vector<PacFileEntry> raw_files_;
     std::vector<uint8_t> xml_data_;  // raw XML bytes from PAC
     uint64_t actual_file_size_ = 0;
+    size_t xml_file_index_ = static_cast<size_t>(-1);
+    mutable std::optional<std::vector<FileInfo>> file_infos_cache_;
+    mutable std::optional<std::string> xml_config_cache_;
 };
 
 } // namespace upac

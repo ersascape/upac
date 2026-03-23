@@ -3,6 +3,7 @@ upac_bin
 build/
 bin/
 obj/
+.cache/
 *.o
 *.a
 *.so
