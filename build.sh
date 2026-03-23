@@ -4,7 +4,7 @@ set -e
 # --- Configuration ---
 CXX=clang++
 CXXFLAGS="-std=c++17 -O2 -Wall -Wextra -Iinclude -Ithird_party/pugixml"
-OUT="upac_bin"
+OUT="upac-cli"
 
 echo "Building upac..."
 

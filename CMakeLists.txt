@@ -19,5 +19,5 @@ target_include_directories(upac_lib PUBLIC include)
 target_link_libraries(upac_lib PUBLIC pugixml)
 
 # --- upac CLI ---
-add_executable(upac src/main.cpp)
-target_link_libraries(upac PRIVATE upac_lib)
+add_executable(upac-cli src/main.cpp)
+target_link_libraries(upac-cli PRIVATE upac_lib)
