@@ -379,8 +379,9 @@ void PacReader::print_file_list(std::ostream& os) const {
 // ============================================================================
 
 bool PacReader::verify_crc() const {
-    // CRC1 covers the header, excluding magic + crc1 + crc2 (last 8 bytes)
-    constexpr size_t crc1_len = sizeof(PacHeader) - sizeof(uint32_t) - 2 * sizeof(uint16_t);
+    // CRC1 covers the header up to the magic field, excluding crc1 and crc2 (last 4 bytes)
+    // Range: [0, 2120)
+    constexpr size_t crc1_len = sizeof(PacHeader) - 2 * sizeof(uint16_t);
     uint16_t computed_crc1 = crc16(0,
         reinterpret_cast<const uint8_t*>(&header_), crc1_len);
 
